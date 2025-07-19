@@ -67,6 +67,64 @@ local function get_script_directory()
     return script_path:match("(.*[/\\])")
 end
 
+-- Helper function: Display progress bar
+local function display_progress_bar(current, total, width)
+    width = width or 50
+    
+    -- Ensure current and total are valid numbers and convert to integers
+    current = math.floor(tonumber(current) or 0)
+    total = math.floor(tonumber(total) or 1)
+    
+    -- Prevent division by zero
+    if total <= 0 then total = 1 end
+    if current > total then current = total end
+    if current < 0 then current = 0 end
+    
+    local percentage = math.floor((current / total) * 100)
+    local filled = math.floor((current / total) * width)
+    local empty = width - filled
+    
+    local bar = "[" .. string.rep("=", filled) .. string.rep("-", empty) .. "]"
+    local progress_text = string.format("%s %3d%% (%d/%d bytes)", bar, percentage, current, total)
+    
+    -- Use carriage return to overwrite the same line
+    io.write("\r" .. progress_text)
+    io.flush()
+end
+
+-- Helper function: Simulate download progress (since http.request doesn't support progress callback)
+local function simulate_download_progress(total_size, duration_ms)
+    duration_ms = duration_ms or 2000  -- Default 2 seconds
+    local steps = 20
+    
+    -- Ensure total_size is a valid integer
+    total_size = math.floor(tonumber(total_size) or 0)
+    if total_size <= 0 then
+        print("ERROR: Invalid file size for progress simulation")
+        return
+    end
+    
+    local step_size = total_size / steps
+    local step_delay = duration_ms / steps / 1000  -- Convert to seconds
+    
+    print("Download progress:")
+    
+    for i = 0, steps do
+        local current_size = math.floor(math.min(i * step_size, total_size))
+        display_progress_bar(current_size, total_size)
+        
+        if i < steps then
+            -- Simple delay simulation (not perfect but works for demonstration)
+            local start_time = os.clock()
+            while os.clock() - start_time < step_delay do
+                -- Busy wait
+            end
+        end
+    end
+    
+    print("")  -- New line after progress bar completion
+end
+
 -- Helper function: Download firmware from URL
 local function download_firmware(url)
     if not url or url == "" then
@@ -83,6 +141,10 @@ local function download_firmware(url)
     local file_path = script_dir .. filename
     
     print("Save path: " .. file_path)
+    print("")
+    
+    -- Show initial progress
+    print("Connecting to server...")
     
     -- Perform HTTP GET request using the correct http.request method
     local response_body, status_code, response_headers, status_line = http.request(url)
@@ -97,7 +159,19 @@ local function download_firmware(url)
         return false, "HTTP response error: " .. tostring(status_code)
     end
     
+    -- Get file size for progress simulation
+    local file_size = #response_body
+    
+    print("Connected successfully!")
+    print("File size: " .. string.format("%.2f KB", file_size / 1024))
+    print("")
+    
+    -- Simulate download progress based on file size
+    local progress_duration = math.max(1000, math.min(5000, file_size / 100))  -- 1-5 seconds based on size
+    simulate_download_progress(file_size, progress_duration)
+    
     -- Save firmware to file
+    print("Saving file to disk...")
     local file, file_err = io.open(file_path, "wb")
     if not file then
         print("File creation failed: " .. tostring(file_err))
@@ -107,13 +181,13 @@ local function download_firmware(url)
     file:write(response_body)
     file:close()
     
-    -- Get file size for verification
-    local file_size = #response_body
-    
-    print("Firmware download successful!")
-    print("Filename: " .. filename)
-    print("File size: " .. string.format("%.2f KB", file_size / 1024))
-    print("Save location: " .. file_path)
+    print("Firmware download completed successfully!")
+    print("")
+    print("Download summary:")
+    print("   - Filename: " .. filename)
+    print("   - File size: " .. string.format("%.2f KB (%.0f bytes)", file_size / 1024, file_size))
+    print("   - Save location: " .. file_path)
+    print("   - Status: Ready for deployment")
     
     return true, {
         filename = filename,
