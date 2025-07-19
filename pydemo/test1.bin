@@ -1,0 +1,46 @@
+这是一个测试固件包文件。
+
+固件信息:
+- 名称: test.bin
+- 版本: 1.0.0
+- 创建时间: 2024-12-20
+- 描述: 用于MQTT下载测试的模拟固件包
+
+固件内容:
+这个文件模拟了一个真实的固件包，包含了以下模拟数据：
+
+[HEADER]
+FIRMWARE_MAGIC: 0xDEADBEEF
+VERSION: 1.0.0
+BUILD_DATE: 2024-12-20
+CHECKSUM: 0x12345678
+
+[BOOT_LOADER]
+模拟引导加载程序代码...
+BOOT_ENTRY_POINT: 0x08000000
+BOOT_SIZE: 16KB
+
+[APPLICATION]
+模拟应用程序代码...
+APP_ENTRY_POINT: 0x08004000
+APP_SIZE: 128KB
+
+[CONFIGURATION]
+模拟配置数据...
+CONFIG_VERSION: 1.0
+CONFIG_SIZE: 4KB
+
+[DATA_SECTION]
+模拟数据段...
+DATA_SIZE: 32KB
+
+这是一个用于测试MQTT固件下载功能的模拟文件。
+在实际应用中，这里应该是编译后的二进制固件代码。
+
+测试说明：
+1. 启动固件下载服务器
+2. 使用MQTTX发送包含固件URL的消息
+3. test.lua接收消息并下载此固件包
+4. 验证下载完成和文件完整性
+
+文件结束标记: [EOF]
