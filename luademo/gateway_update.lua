@@ -51,18 +51,13 @@ end
 local function extract_filename_from_url(url)
     if not url then return nil end
     
-    -- 移除URL中的查询参数部分
-    local clean_url = url:match("^([^?]+)") or url
-    
-    -- 提取URL路径中的文件名
-    local filename = clean_url:match("([^/]+)$")
+    -- Extract filename from URL path
+    local filename = url:match("([^/]+)$")
     if filename and filename ~= "" then
-        -- 移除文件名中可能包含的无效Windows字符
-        filename = filename:gsub([[%?%*%:%.%"%<%>%|%/\]], "_")
         return filename
     end
     
-    --  fallback: 基于时间戳生成文件名
+    -- Fallback: generate filename based on timestamp
     return "firmware_" .. os.time() .. ".bin"
 end
 
@@ -131,7 +126,6 @@ local function simulate_download_progress(total_size, duration_ms)
 end
 
 -- Helper function: Download firmware from URL
--- Helper function: Download firmware from URL
 local function download_firmware(url)
     if not url or url == "" then
         print("ERROR: Firmware URL is empty")
@@ -165,34 +159,6 @@ local function download_firmware(url)
         return false, "HTTP response error: " .. tostring(status_code)
     end
     
-    -- Check if response is HTML
-    local is_html = false
-    if response_headers and response_headers["content-type"] then
-        is_html = string.find(response_headers["content-type"], "text/html", 1, true) ~= nil
-    end
-    
-    -- If it's HTML, try to extract numbers from pre tag
-    if is_html then
-        print("Detected HTML response. Attempting to extract content...")
-        local numbers = string.match(response_body, "<pre[^>]*>([%d%s]+)</pre>")
-        if numbers then
-            -- Remove whitespace
-            numbers = string.gsub(numbers, "%s+", "")
-            print("Successfully extracted numbers from HTML:")
-            print("====================================")
-            print(numbers)
-            print("====================================")
-            return true, {"extracted_numbers", numbers}
-        else
-            print("Failed to extract numbers from HTML response.")
-            print("Raw HTML content:")
-            print("====================================")
-            print(response_body)
-            print("====================================")
-            return false, "Could not extract numbers from HTML"
-        end
-    end
-    
     -- Get file size for progress simulation
     local file_size = #response_body
     
@@ -209,13 +175,6 @@ local function download_firmware(url)
     local file, file_err = io.open(file_path, "wb")
     if not file then
         print("File creation failed: " .. tostring(file_err))
-        
-        -- 文件保存失败时，打印出获取到的内容
-        print("Content received from URL:")
-        print("====================================")
-        print(response_body)
-        print("====================================")
-        
         return false, "File creation failed: " .. tostring(file_err)
     end
     
