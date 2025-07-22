@@ -1,3 +1,25 @@
+# 升级流程
+324升级：
+1.物联网平台推送升级通知
+	https://hanta.yuque.com/px7kg1/yfac2l/uhg5zatequbcex1k#
+2.网关下载升级包（http）
+3.网关下发升级包
+	广播+读bitmap确认
+4.密钥交换（出生证）
+5.启动升级
+6.验证升级结果，做标记。
+
+蓝牙升级，与324类似。
+
+网关应用升级：替换lua和so文件。
+摄像头应用升级：ULC传输文件，替换文件。
+
+内核驱动升级：替换ko文件。
+
+WiFi升级，待定
+
+uwb模块，待定。
+
 ## open local mqtt broker
 
 ```cmd
