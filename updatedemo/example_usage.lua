@@ -1,7 +1,7 @@
 #!/usr/bin/env lua
 -- ULC 固件更新使用示例
 -- 如何使用 ULC 固件更新模块的简单演示
--- 作者: Lua 实现团队
+-- 作者: Longfei
 -- 日期: 2024
 local this_dir = debug.getinfo(1, "S").source:match("@?(.*[/\\])") or "./"
 package.path = this_dir .. "?.lua;" .. package.path

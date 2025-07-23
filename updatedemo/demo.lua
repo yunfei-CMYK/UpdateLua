@@ -1,17 +1,16 @@
 #!/usr/bin/env lua
 -- ULC 固件更新演示脚本
 -- 全面演示所有功能
--- 作者: Lua 实现团队
+-- 作者: Longfei
 -- 日期: 2024
 
 -- 加载所需模块
 local this_dir = debug.getinfo(1, "S").source:match("@?(.*[/\\])") or "./"
 package.path = this_dir .. "?.lua;" .. package.path
+local config_mgr = require("config")
 local ulc_update = require("ulc_firmware_update")
 
--- 确保能正确找到config模块
-package.path = this_dir .. "?.lua;" .. this_dir .. "../?.lua;" .. package.path
-local config_mgr = require("config")
+
 
 -- 演示配置
 local DEMO_CONFIG = {
@@ -248,7 +247,126 @@ function demo.complete_update_demo()
     print("\n完整更新流程演示已完成！")
 end
 
--- 演示 6: 错误处理
+-- 演示 6: Bitmap 功能
+function demo.bitmap_demo()
+    demo_utils.print_header("Bitmap Management Demo")
+    
+    demo_utils.print_step(1, "测试 Bitmap 工具函数")
+    print("演示 bitmap 位操作功能:")
+    
+    -- 创建测试bitmap
+    local test_bitmap = {}
+    local total_bits = 16
+    
+    print(string.format("创建 %d 位的测试 bitmap", total_bits))
+    
+    -- 设置一些位
+    local test_bits = {0, 2, 5, 7, 10, 15}
+    for _, bit_index in ipairs(test_bits) do
+        ulc_update.utils.set_bit(test_bitmap, bit_index)
+        print(string.format("  设置位 %d", bit_index))
+    end
+    demo_utils.wait("", DEMO_CONFIG.demo_delay)
+    
+    demo_utils.print_step(2, "检查 Bitmap 状态")
+    print("检查各位的状态:")
+    for i = 0, total_bits - 1 do
+        local is_set = ulc_update.utils.is_bit_set(test_bitmap, i)
+        print(string.format("  位 %2d: %s", i, is_set and "✓" or "✗"))
+    end
+    
+    -- 显示bitmap的十六进制表示
+    print("\nBitmap 十六进制表示:")
+    local hex_str = ""
+    for i = 1, #test_bitmap do
+        hex_str = hex_str .. string.format("%02X ", test_bitmap[i] or 0)
+    end
+    print("  " .. hex_str)
+    demo_utils.wait("", DEMO_CONFIG.demo_delay)
+    
+    demo_utils.print_step(3, "测试 Bitmap 完整性检查")
+    local is_complete = ulc_update.utils.is_bitmap_complete(test_bitmap, total_bits)
+    print(string.format("Bitmap 是否完整: %s", is_complete and "是" or "否"))
+    
+    -- 设置所有位
+    print("\n设置所有位为1...")
+    for i = 0, total_bits - 1 do
+        ulc_update.utils.set_bit(test_bitmap, i)
+    end
+    
+    is_complete = ulc_update.utils.is_bitmap_complete(test_bitmap, total_bits)
+    print(string.format("现在 Bitmap 是否完整: %s", is_complete and "是" or "否"))
+    demo_utils.wait("", DEMO_CONFIG.demo_delay)
+    
+    demo_utils.print_step(4, "演示数据块管理")
+    print("测试数据块信息管理:")
+    
+    -- 清空数据块信息
+    ulc_update.bitmap.clear_block_info()
+    
+    -- 添加测试数据块
+    local test_blocks = {
+        {index = 0, file_offset = 0, spi_flash_addr = 0x10000, block_len = 256},
+        {index = 1, file_offset = 256, spi_flash_addr = 0x10100, block_len = 256},
+        {index = 2, file_offset = 512, spi_flash_addr = 0x10200, block_len = 256},
+        {index = 3, file_offset = 768, spi_flash_addr = 0x10300, block_len = 128}  -- 最后一块可能较小
+    }
+    
+    for _, block in ipairs(test_blocks) do
+        ulc_update.bitmap.add_block_info(block.index, block.file_offset, 
+                                       block.spi_flash_addr, block.block_len)
+    end
+    demo_utils.wait("", DEMO_CONFIG.demo_delay)
+    
+    demo_utils.print_step(5, "验证数据块信息")
+    print("验证已添加的数据块信息:")
+    for _, block in ipairs(test_blocks) do
+        local info = ulc_update.bitmap.get_block_info(block.index)
+        if info then
+            print(string.format("  块 %d: 偏移=%d, Flash地址=0x%X, 长度=%d", 
+                               block.index, info.file_offset, info.spi_flash_addr, info.block_len))
+        else
+            print(string.format("  块 %d: 未找到信息", block.index))
+        end
+    end
+    demo_utils.wait("", DEMO_CONFIG.demo_delay)
+    
+    demo_utils.print_step(6, "模拟 Bitmap 获取和重传")
+    print("模拟从设备获取 bitmap 和重传过程:")
+    
+    -- 设置全局变量以便模拟
+    ulc_update.total_blocks = #test_blocks
+    
+    -- 模拟获取设备bitmap
+    print("获取设备 bitmap...")
+    local device_bitmap = ulc_update.bitmap.get_device_bitmap()
+    
+    if device_bitmap then
+        print("分析 bitmap 状态:")
+        local missing_packets = {}
+        for i = 0, #test_blocks - 1 do
+            local is_received = ulc_update.utils.is_bit_set(device_bitmap, i)
+            print(string.format("  数据包 %d: %s", i, is_received and "已接收" or "丢失"))
+            if not is_received then
+                table.insert(missing_packets, i)
+            end
+        end
+        
+        if #missing_packets > 0 then
+            print(string.format("\n发现 %d 个丢失的数据包: %s", 
+                               #missing_packets, table.concat(missing_packets, ", ")))
+            print("注意: 这是模拟演示，实际重传需要真实的加密固件数据")
+        else
+            print("\n所有数据包都已正确接收！")
+        end
+    else
+        print("获取 bitmap 失败")
+    end
+    
+    print("\nBitmap 功能演示已完成！")
+end
+
+-- 演示 7: 错误处理
 function demo.error_handling_demo()
     demo_utils.print_header("Error Handling Demo")
     
@@ -301,6 +419,7 @@ function demo.run_all_demos()
         {func = demo.file_operations_demo, name = "文件操作"},
         {func = demo.crypto_demo, name = "加密函数"},
         {func = demo.communication_demo, name = "通信模拟"},
+        {func = demo.bitmap_demo, name = "Bitmap 功能"},
         {func = demo.error_handling_demo, name = "错误处理"},
         {func = demo.complete_update_demo, name = "完整更新流程"}
     }
@@ -324,6 +443,7 @@ function demo.run_all_demos()
     print("- 文件操作和实用函数")
     print("- 加密操作 (SM2/SM4)")
     print("- 通信模拟")
+    print("- Bitmap 完整性检查和重传机制")
     print("- 错误处理和边界条件")
     print("- 完整固件更新流程")
     print("")
@@ -345,13 +465,14 @@ function demo.interactive_menu()
     print("3. 文件操作演示")
     print("4. 加密函数演示")
     print("5. 通信模拟演示")
-    print("6. 错误处理演示")
-    print("7. 完整更新流程演示")
-    print("8. 快速概览")
+    print("6. Bitmap 功能演示")
+    print("7. 错误处理演示")
+    print("8. 完整更新流程演示")
+    print("9. 快速概览")
     print("0. 退出")
     print("")
     
-    io.write("选择演示 (0-8): ")
+    io.write("选择演示 (0-9): ")
     local choice = io.read()
     
     if choice == "1" then
@@ -365,15 +486,18 @@ function demo.interactive_menu()
     elseif choice == "5" then
         demo.communication_demo()
     elseif choice == "6" then
-        demo.error_handling_demo()
+        demo.bitmap_demo()
     elseif choice == "7" then
-        demo.complete_update_demo()
+        demo.error_handling_demo()
     elseif choice == "8" then
+        demo.complete_update_demo()
+    elseif choice == "9" then
         demo_utils.print_header("ULC 固件更新 - 快速概览")
         print("本系统提供:")
         print("• ULC 设备的安全固件更新")
         print("• SM2/SM4 加密保护")
         print("• 多种通信方式 (ULC/USB)")
+        print("• Bitmap 完整性检查和智能重传")
         print("• 全面的测试框架")
         print("• Windows 平台优化")
         print("• 用于开发的模拟仿真")
