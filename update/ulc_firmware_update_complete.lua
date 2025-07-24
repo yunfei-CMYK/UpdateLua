@@ -259,8 +259,6 @@ local comm = {}
 
 -- 模拟 ULC APDU 通信
 function comm.ulc_send_apdu(apdu)
-    print("📤 发送 APDU: " .. apdu)
-    
     -- 模拟传输延迟
     if CONFIG.TEST_MODE then
         socket.sleep(0.01)
@@ -268,19 +266,16 @@ function comm.ulc_send_apdu(apdu)
     
     -- 模拟传输错误
     if utils.simulate_transmission_error() then
-        print("⚠️  模拟传输错误")
         error("传输错误")
     end
     
     -- 根据不同的APDU命令返回模拟响应
     if apdu == "00A4000002DF20" then
         -- 选择应用
-        print("📥 接收: 9000")
         return "9000"
     elseif apdu:sub(1, 8) == "E0B4011C" then
         -- 获取 SM2 公钥
         local mock_pubkey = CONFIG.PUB_KEY_X .. CONFIG.PUB_KEY_Y
-        print("📥 接收: " .. mock_pubkey)
         return mock_pubkey
     elseif apdu:sub(1, 8) == "80DB001C" then
         -- 获取 UUID 和签名
@@ -288,28 +283,22 @@ function comm.ulc_send_apdu(apdu)
         local mock_uuid2 = utils.generate_random_hex(16)
         local mock_signature = string.rep("A", 64)  -- 64字节模拟签名
         local response = "01" .. mock_uuid1 .. "02" .. mock_uuid2 .. mock_signature
-        print("📥 接收: " .. response)
         return response
     elseif apdu:sub(1, 8) == "80DA0000" then
         -- 发送切换信息
-        print("📥 接收: 9000")
         return "9000"
     elseif apdu:sub(1, 8) == "00200010" then
         -- 发送加密的 SK
-        print("📥 接收: 9000")
         return "9000"
     elseif apdu:sub(1, 8) == "00D00000" then
         -- 发送固件数据
-        print("📥 接收: 9000")
         return "9000"
     elseif apdu:sub(1, 8) == "80C40000" then
         -- 固件更新完成检查
-        print("📥 接收: 9000")
         return "9000"
     elseif apdu:sub(1, 8) == "F0F60200" then
         -- 获取 COS 版本
         local version = "01020304"  -- 模拟版本
-        print("📥 接收: " .. version)
         return version
     elseif apdu == "FCDF000000" then
         -- 获取 bitmap
@@ -330,11 +319,9 @@ function comm.ulc_send_apdu(apdu)
             bitmap_hex = bitmap_hex .. string.format("%02X", mock_bitmap[i])
         end
         
-        print("📥 接收 bitmap: " .. bitmap_hex)
         return bitmap_hex
     else
         -- 默认响应
-        print("📥 接收: 9000")
         return "9000"
     end
 end
@@ -351,7 +338,6 @@ function comm.ulc_send_apdu_with_retry(apdu, max_retries)
         else
             last_error = result
             if attempt < max_retries then
-                print(string.format("⚠️  重试 %d/%d: %s", attempt, max_retries, result))
                 socket.sleep(0.1 * attempt)  -- 递增延迟
             end
         end
@@ -363,14 +349,29 @@ end
 -- 进度显示模块
 local progress = {}
 
-function progress.show_progress(current, total, description)
+-- 保存当前进度条状态
+local progress_state = {
+    active = false,
+    last_line = "",
+    last_percentage = -1
+}
+
+-- 清除当前行
+local function clear_progress_line()
+    if progress_state.active then
+        io.write("\r\27[K")  -- 回到行首并清除整行
+        io.flush()
+    end
+end
+
+function progress.show_progress(current, total, description, extra_info)
     -- 确保参数是有效的数字
     if not current or not total or total <= 0 then
         return
     end
     
     local percentage = math.floor((current * 100) / total)
-    local bar_width = 50
+    local bar_width = 40  -- 稍微缩短进度条宽度以适应更多信息
     local filled = math.floor((current * bar_width) / total)
     local empty = bar_width - filled
     
@@ -379,14 +380,38 @@ function progress.show_progress(current, total, description)
     empty = math.max(0, bar_width - filled)
     
     local bar = "[" .. string.rep("█", filled) .. string.rep("░", empty) .. "]"
-    local progress_text = string.format("\r%s %s %3d%% (%d/%d)", 
+    local progress_text = string.format("%s %s %3d%% (%d/%d)", 
                                       description or "📊 进度", bar, percentage, current, total)
     
+    -- 添加额外信息
+    if extra_info and extra_info ~= "" then
+        progress_text = progress_text .. " " .. extra_info
+    end
+    
+    -- 如果百分比没有变化且没有额外信息，不重复显示
+    if progress_state.active and percentage == progress_state.last_percentage and not extra_info then
+        return
+    end
+    
+    -- 清除之前的进度条
+    clear_progress_line()
+    
+    -- 显示新的进度条（不换行）
     io.write(progress_text)
     io.flush()
     
+    -- 更新状态
+    progress_state.active = true
+    progress_state.last_line = progress_text
+    progress_state.last_percentage = percentage
+    
+    -- 如果完成，换行并重置状态
     if current >= total then
-        print("")  -- 完成时换行
+        io.write("\n")
+        io.flush()
+        progress_state.active = false
+        progress_state.last_line = ""
+        progress_state.last_percentage = -1
     end
 end
 
@@ -402,24 +427,257 @@ function progress.show_transfer_stats(transferred, total, start_time, descriptio
     progress.show_progress(transferred, total, (description or "传输") .. stats)
 end
 
--- 加密函数模块（模拟实现）
+-- 加密函数模块（真实实现）
 local crypto = {}
 
--- 模拟 SM2 签名验证
+-- 安全加载 crypto 库
+local crypto_lib = nil
+local crypto_available = false
+
+local function load_crypto_lib()
+    local success, result = pcall(function()
+        -- 尝试加载不同的crypto库
+        local lib = require((arg[-1]:sub(-9) == "lua51.exe") and "tdr.lib.crypto" or "crypto")
+        if not lib.hex then
+            lib.hex = require("tdr.lib.base16").encode
+        end
+        return lib
+    end)
+    
+    if success then
+        crypto_lib = result
+        crypto_available = true
+        print("✅ Crypto库加载成功")
+    else
+        print("⚠️  警告: Crypto库加载失败: " .. tostring(result))
+        print("🎭 将使用模拟加密功能")
+        crypto_available = false
+    end
+end
+
+-- 初始化crypto库
+load_crypto_lib()
+
+-- 工具函数：十六进制字符串转二进制
+local function hex_to_bin(hex_str)
+    if not hex_str or hex_str == "" then
+        return ""
+    end
+    
+    -- 确保字符串长度为偶数
+    if #hex_str % 2 ~= 0 then
+        hex_str = "0" .. hex_str
+    end
+    
+    local result = ""
+    for i = 1, #hex_str, 2 do
+        local hex_byte = hex_str:sub(i, i + 1)
+        local byte_val = tonumber(hex_byte, 16)
+        if byte_val then
+            result = result .. string.char(byte_val)
+        else
+            error("无效的十六进制字符: " .. hex_byte)
+        end
+    end
+    return result
+end
+
+-- 工具函数：二进制转十六进制字符串
+local function bin_to_hex(bin_str)
+    if not bin_str then
+        return ""
+    end
+    return crypto_lib.hex(bin_str)
+end
+
+-- SM2 签名验证函数（基于 pkey.lua 的实现方法）
+-- 参数：
+--   public_key: SM2 公钥（十六进制字符串，含或不含"04"前缀）
+--   id: 用户ID（十六进制字符串，可为空）
+--   signature: 签名数据（十六进制字符串）
+--   plain_data: 原始数据（十六进制字符串）
+-- 返回：验证结果（boolean）
 function crypto.sm2_verify(public_key, id, signature, plain_data)
-    print("🔐 SM2 验证:")
+    print("🔐 SM2 签名验证:")
     print("  公钥: " .. (public_key or ""))
     print("  ID: " .. (id or CONFIG.ENTL_ID))
     print("  签名: " .. (signature or ""))
     print("  原始数据: " .. (plain_data or ""))
     
-    -- 模拟验证过程
-    if CONFIG.TEST_MODE then
-        socket.sleep(0.1)  -- 模拟验证时间
+    -- 检查crypto库是否可用
+    if not crypto_available then
+        print("  ⚠️  警告: Crypto库不可用，使用模拟验证")
+        if CONFIG.TEST_MODE then
+            local mock_result = true  -- 在测试模式下模拟验证通过
+            print("  🎭 模拟验证结果: " .. tostring(mock_result))
+            return mock_result
+        else
+            print("  ❌ 错误: 生产模式下需要真实的crypto库支持")
+            return false
+        end
     end
     
-    print("  ✅ 验证结果: 通过 (模拟)")
-    return true
+    -- 参数验证
+    if not public_key or public_key == "" then
+        print("  ❌ 错误: SM2 公钥不能为空")
+        return false
+    end
+    
+    if not signature or signature == "" then
+        print("  ❌ 错误: 签名数据不能为空")
+        return false
+    end
+    
+    if not plain_data then
+        print("  ❌ 错误: 原始数据不能为空")
+        return false
+    end
+    
+    -- 使用默认用户ID
+    local user_id = id
+    if not user_id or user_id == "" then
+        user_id = CONFIG.ENTL_ID
+    end
+    
+    -- 执行 SM2 签名验证
+    local success, result = pcall(function()
+        -- 处理公钥格式
+        local pubkey_without_prefix = public_key
+        if public_key:sub(1, 2) == "04" then
+            pubkey_without_prefix = public_key:sub(3)
+        end
+        
+        -- 构造完整的公钥（添加"04"前缀）
+        local full_pubkey = "04" .. pubkey_without_prefix
+        
+        -- 验证公钥长度
+        if #full_pubkey ~= 130 then
+            error("公钥长度无效，应该是130个字符（含04前缀），实际长度: " .. #full_pubkey)
+        end
+        
+        print("  📊 公钥长度验证通过: " .. #full_pubkey .. " 字符")
+        
+        -- 计算 ZA 值（仿照 JavaScript 版本的实现）
+        -- ZA = H256(ENTL || ID || a || b || xG || yG || xA || yA)
+        local za_data = "0080" .. user_id .. CONFIG.SM2_A .. CONFIG.SM2_B .. 
+                       CONFIG.SM2_GX .. CONFIG.SM2_GY .. pubkey_without_prefix
+        
+        print("  📝 ZA 计算数据长度: " .. #za_data .. " 字符")
+        
+        -- 使用 SM3 计算 ZA 的哈希值
+        local za_bin = hex_to_bin(za_data)
+        local za_hash = crypto_lib.digest("SM3", za_bin)
+        local za_hash_hex = bin_to_hex(za_hash):upper()
+        print("  🔍 ZA 哈希值: " .. za_hash_hex)
+        
+        -- 计算 M' = ZA || M 的哈希值
+        local plain_data_bin = hex_to_bin(plain_data)
+        local message_hash = crypto_lib.digest("SM3", za_hash .. plain_data_bin)
+        local message_hash_hex = bin_to_hex(message_hash):upper()
+        print("  🔍 消息哈希值: " .. message_hash_hex)
+        
+        -- 创建 SM2 公钥对象
+        local pubkey_bin = hex_to_bin(full_pubkey)
+        local pkey = nil
+        local create_success = false
+        local error_messages = {}
+        
+        -- 方法1：尝试使用 RAWPUBKEY 格式
+        local ok1, err1 = pcall(function()
+            pkey = crypto_lib.pkey.new(pubkey_bin, "RAWPUBKEY/")
+            if pkey then
+                create_success = true
+                print("  ✅ 成功使用 RAWPUBKEY 格式创建公钥对象")
+            end
+        end)
+        
+        if not ok1 then
+            table.insert(error_messages, "RAWPUBKEY方法失败: " .. tostring(err1))
+        end
+        
+        if not create_success then
+            -- 方法2：尝试使用 DER 格式
+            local ok2, err2 = pcall(function()
+                -- SM2 公钥的 DER 格式头部
+                local der_header = hex_to_bin("3059301306072A8648CE3D020106082A811CCF5501822D03420000")
+                local der_pubkey = der_header .. pubkey_bin
+                pkey = crypto_lib.pkey.new(der_pubkey, "PUBKEY/")
+                if pkey then
+                    create_success = true
+                    print("  ✅ 成功使用 DER 格式创建公钥对象")
+                end
+            end)
+            
+            if not ok2 then
+                table.insert(error_messages, "DER方法失败: " .. tostring(err2))
+            end
+        end
+        
+        if not create_success then
+            -- 方法3：尝试其他可能的格式
+            local ok3, err3 = pcall(function()
+                -- 尝试不带前缀的原始格式
+                local raw_pubkey = hex_to_bin(pubkey_without_prefix)
+                pkey = crypto_lib.pkey.new(raw_pubkey, "RAWPUBKEY/")
+                if pkey then
+                    create_success = true
+                    print("  ✅ 成功使用原始格式创建公钥对象")
+                end
+            end)
+            
+            if not ok3 then
+                table.insert(error_messages, "原始格式方法失败: " .. tostring(err3))
+            end
+        end
+        
+        -- 如果所有方法都失败，检查是否在测试模式下可以使用模拟验证
+        if not create_success then
+            if CONFIG.TEST_MODE then
+                print("  ⚠️  警告: 无法创建真实的SM2公钥对象，使用模拟验证")
+                print("  📝 错误详情:")
+                for i, msg in ipairs(error_messages) do
+                    print("    " .. i .. ". " .. msg)
+                end
+                
+                -- 在测试模式下，返回模拟的验证结果
+                -- 这里可以根据需要返回true或false来测试不同场景
+                local mock_result = true  -- 模拟验证通过
+                print("  🎭 模拟验证结果: " .. tostring(mock_result))
+                return mock_result
+            else
+                -- 非测试模式下，抛出详细错误信息
+                local error_detail = "无法创建 SM2 公钥对象。尝试的方法:\n"
+                for i, msg in ipairs(error_messages) do
+                    error_detail = error_detail .. "  " .. i .. ". " .. msg .. "\n"
+                end
+                error_detail = error_detail .. "请检查crypto库是否支持SM2算法或公钥格式是否正确"
+                error(error_detail)
+            end
+        end
+        
+        -- 转换签名格式
+        local signature_bin = hex_to_bin(signature)
+        print("  📊 签名二进制长度: " .. #signature_bin .. " 字节")
+        
+        -- 执行 SM2 签名验证
+        -- 注意：这里直接使用计算好的消息哈希进行验证
+        local verify_result = pkey:verify(message_hash, signature_bin)
+        
+        print("  🔍 SM2 签名验证结果: " .. tostring(verify_result))
+        return verify_result
+    end)
+    
+    if success then
+        if result then
+            print("  ✅ SM2 签名验证通过")
+        else
+            print("  ❌ SM2 签名验证失败")
+        end
+        return result
+    else
+        print("  ❌ SM2 签名验证过程出错: " .. tostring(result))
+        return false
+    end
 end
 
 -- 模拟 SM2 加密
@@ -491,10 +749,7 @@ function bitmap.add_block_info(index, file_offset, spi_flash_addr, block_len)
         spi_flash_addr = spi_flash_addr,
         block_len = block_len
     }
-    if CONFIG.TEST_MODE then
-        print(string.format("📦 添加数据块 %d: 文件偏移=%d, Flash地址=0x%X, 长度=%d", 
-                           index, file_offset, spi_flash_addr, block_len))
-    end
+    -- 在测试模式下，可以通过进度条显示当前处理的数据块信息
 end
 
 -- 获取数据块信息
@@ -511,10 +766,7 @@ end
 
 -- 获取设备的bitmap
 function bitmap.get_device_bitmap()
-    print("=== 📊 获取设备 Bitmap ===")
-    
     if total_blocks == 0 then
-        print("❌ 错误: 没有数据块信息")
         return nil
     end
     
@@ -522,7 +774,6 @@ function bitmap.get_device_bitmap()
     local bitmap_response = comm.ulc_send_apdu_with_retry("FCDF000000")
     
     if not bitmap_response or bitmap_response == "9000" then
-        print("❌ 获取bitmap失败")
         return nil
     end
     
@@ -534,32 +785,25 @@ function bitmap.get_device_bitmap()
         table.insert(bitmap_array, byte_val)
     end
     
-    print(string.format("✅ 获取到 bitmap，长度: %d 字节", #bitmap_array))
     return bitmap_array
 end
 
 -- 根据bitmap重传丢失的数据包
 function bitmap.retry_missing_packets(encrypted_firmware)
-    print("=== 🔄 根据 Bitmap 重传丢失数据包 ===")
-    
     local max_retries = CONFIG.MAX_RETRIES
     local success = false
     local final_missing_packets = {}
     
     for retry_count = 1, max_retries do
-        print(string.format("🔄 重传尝试 %d/%d", retry_count, max_retries))
-        
         -- 获取当前bitmap
         local device_bitmap = bitmap.get_device_bitmap()
         if not device_bitmap then
-            print("⚠️  获取bitmap失败，跳过此次重传")
             socket.sleep(1)
             goto continue
         end
         
         -- 检查是否所有数据包都已接收
         if utils.is_bitmap_complete(device_bitmap, total_blocks) then
-            print("🎉 所有数据包都已成功接收！")
             success = true
             break
         end
@@ -567,7 +811,6 @@ function bitmap.retry_missing_packets(encrypted_firmware)
         -- 分析丢失的数据包
         local retransmitted = 0
         local current_missing = {}
-        local missing_ranges = {}
         
         for block_index = 0, total_blocks - 1 do
             if not utils.is_bit_set(device_bitmap, block_index) then
@@ -575,58 +818,26 @@ function bitmap.retry_missing_packets(encrypted_firmware)
             end
         end
         
-        -- 分析丢失数据包的范围
-        if #current_missing > 0 then
-            print(string.format("📊 发现 %d 个丢失数据包", #current_missing))
-            
-            -- 显示丢失数据包的详细信息
-            local missing_str = ""
-            for i, packet_id in ipairs(current_missing) do
-                if i > 1 then
-                    missing_str = missing_str .. ", "
-                end
-                missing_str = missing_str .. tostring(packet_id)
-                
-                -- 每行最多显示10个包号
-                if i % 10 == 0 and i < #current_missing then
-                    print("📋 丢失数据包: " .. missing_str)
-                    missing_str = ""
-                end
-            end
-            
-            if missing_str ~= "" then
-                print("📋 丢失数据包: " .. missing_str)
-            end
-            
-            -- 计算丢失率
-            local loss_rate = (#current_missing * 100.0) / total_blocks
-            print(string.format("📈 丢失率: %.2f%% (%d/%d)", loss_rate, #current_missing, total_blocks))
-        end
-        
         -- 重传丢失的数据包
         for _, block_index in ipairs(current_missing) do
-            print(string.format("📤 重传数据块 %d", block_index))
-            
             local block_info = bitmap.get_block_info(block_index)
             if block_info then
                 -- 重传这个数据包
                 bitmap.retransmit_single_packet(encrypted_firmware, block_index, block_info)
                 retransmitted = retransmitted + 1
                 
-                -- 显示重传进度
-                if retransmitted % 10 == 0 or retransmitted == #current_missing then
-                    progress.show_progress(retransmitted, #current_missing, "🔄 重传进度")
-                end
+                -- 显示重传进度（包含当前重传的数据块信息和丢失率）
+                local loss_rate = (#current_missing * 100.0) / total_blocks
+                local extra_info = string.format("重传 %d/%d (丢失率: %.1f%%)", 
+                                                retransmitted, #current_missing, loss_rate)
+                progress.show_progress(retransmitted, #current_missing, "🔄 重传进度", extra_info)
             end
         end
         
         -- 记录最后一轮的丢失数据包
         final_missing_packets = current_missing
         
-        print(string.format("✅ 本轮重传了 %d 个数据包", retransmitted))
-        
         if retransmitted == 0 then
-            print("ℹ️  没有需要重传的数据包")
             success = true
             break
         end
@@ -641,41 +852,10 @@ function bitmap.retry_missing_packets(encrypted_firmware)
         print("🎉 Bitmap 验证通过，所有数据包传输完整！")
     else
         print("⚠️  警告: 经过多次重传，仍有数据包丢失")
-        
-        -- 打印最终丢失的数据包详情
         if #final_missing_packets > 0 then
-            print(string.format("=== ❌ 最终丢失的数据包列表 (共 %d 个) ===", #final_missing_packets))
-            
-            -- 分析丢失数据包的范围
-            local ranges = {}
-            local start_range = final_missing_packets[1]
-            local end_range = final_missing_packets[1]
-            
-            for i = 2, #final_missing_packets do
-                if final_missing_packets[i] == end_range + 1 then
-                    end_range = final_missing_packets[i]
-                else
-                    if start_range == end_range then
-                        table.insert(ranges, tostring(start_range))
-                    else
-                        table.insert(ranges, start_range .. "-" .. end_range)
-                    end
-                    start_range = final_missing_packets[i]
-                    end_range = final_missing_packets[i]
-                end
-            end
-            
-            -- 添加最后一个范围
-            if start_range == end_range then
-                table.insert(ranges, tostring(start_range))
-            else
-                table.insert(ranges, start_range .. "-" .. end_range)
-            end
-            
-            print("📋 丢失数据包范围: " .. table.concat(ranges, ", "))
-            print(string.format("📊 总计: %d/%d 数据包丢失 (%.2f%%)", 
-                               #final_missing_packets, total_blocks, 
-                               (#final_missing_packets * 100.0) / total_blocks))
+            local loss_rate = (#final_missing_packets * 100.0) / total_blocks
+            print(string.format("📊 最终丢失: %d/%d 数据包 (%.2f%%)", 
+                               #final_missing_packets, total_blocks, loss_rate))
         end
     end
     
@@ -873,17 +1053,11 @@ function ulc_update.transfer_firmware(encrypted_firmware)
     local current_packet = 0
     local spi_flash_addr = 0x5000  -- 起始Flash地址
     
-    print(string.format("📊 需要发送的总包数: %d", calculated_total_blocks))
-    print(string.format("📦 数据包大小: %d 字节", packet_size))
-    print(string.format("💾 固件总大小: %.2f KB", firmware_length / 2 / 1024))
-    
     -- 清空之前的数据块信息
     bitmap.clear_block_info()
     
     -- 设置总块数到bitmap模块
     total_blocks = calculated_total_blocks
-    
-    print("🚀 开始传输固件数据...")
     
     while offset < #encrypted_firmware do
         local remaining = #encrypted_firmware - offset
@@ -916,10 +1090,7 @@ function ulc_update.transfer_firmware(encrypted_firmware)
         socket.sleep(0.01)
     end
     
-    print("\n✅ 初始固件传输完成！")
-    
     -- 使用bitmap验证传输完整性并重传丢失的数据包
-    print("")
     local bitmap_success = bitmap.retry_missing_packets(encrypted_firmware)
     
     if bitmap_success then
@@ -1065,6 +1236,15 @@ function ulc_update.show_config()
     end
 end
 
+-- 测试辅助函数
+function ulc_update.get_crypto_module()
+    return crypto
+end
+
+function ulc_update.get_config()
+    return CONFIG
+end
+
 -- 导出模块
 return {
     config = CONFIG,
@@ -1078,5 +1258,11 @@ return {
     update_firmware = ulc_update.update_firmware,
     set_config = ulc_update.set_config,
     get_config = ulc_update.get_config,
-    show_config = ulc_update.show_config
+    show_config = ulc_update.show_config,
+    get_crypto_module = ulc_update.get_crypto_module,
+    
+    -- 测试函数
+    test_sm2_verify = function(public_key, id, signature, plain_data)
+        return crypto.sm2_verify(public_key, id, signature, plain_data)
+    end
 }

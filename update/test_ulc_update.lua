@@ -8,6 +8,158 @@ local this_dir = debug.getinfo(1, "S").source:match("@?(.*[/\\])") or "./"
 package.path = this_dir .. "?.lua;" .. package.path
 local ulc_update_module = require("ulc_firmware_update_complete")
 
+-- 固定进度条显示模块
+local fixed_progress = {}
+
+-- 保存当前进度条状态
+local current_progress_state = {
+    active = false,
+    last_line = "",
+    last_percentage = -1,
+    start_time = 0,
+    description = ""
+}
+
+-- 清除当前行并移动光标到行首
+local function clear_current_line()
+    if current_progress_state.active then
+        -- 使用更简单的清除方式：回到行首，清除整行，再回到行首
+        io.write("\r\27[K")
+        io.flush()
+    end
+end
+
+-- 显示固定进度条
+function fixed_progress.show_progress(current, total, description, extra_info)
+    if not current or not total or total <= 0 then
+        return
+    end
+    
+    local percentage = math.floor((current * 100) / total)
+    local bar_width = 40  -- 稍微缩短进度条宽度
+    local filled = math.floor((current * bar_width) / total)
+    local empty = bar_width - filled
+    
+    -- 确保filled和empty都是非负整数
+    filled = math.max(0, math.min(bar_width, filled))
+    empty = math.max(0, bar_width - filled)
+    
+    local bar = "[" .. string.rep("█", filled) .. string.rep("░", empty) .. "]"
+    
+    -- 构建进度文本
+    local progress_text = string.format("%s %s %3d%% (%d/%d)", 
+                                      description or "📊 进度", bar, percentage, current, total)
+    
+    -- 添加额外信息（如速度、剩余时间等）
+    if extra_info then
+        progress_text = progress_text .. " " .. extra_info
+    end
+    
+    -- 如果进度条已激活且百分比没有变化，只更新额外信息
+    if current_progress_state.active and percentage == current_progress_state.last_percentage then
+        if extra_info and extra_info ~= "" then
+            -- 只更新额外信息部分
+            clear_current_line()
+            io.write(progress_text)
+            io.flush()
+            current_progress_state.last_line = progress_text
+        end
+        return
+    end
+    
+    -- 清除之前的进度条
+    clear_current_line()
+    
+    -- 显示新的进度条（不换行）
+    io.write(progress_text)
+    io.flush()
+    
+    -- 更新状态
+    current_progress_state.active = true
+    current_progress_state.last_line = progress_text
+    current_progress_state.last_percentage = percentage
+    current_progress_state.description = description or "进度"
+    
+    -- 如果完成，换行并重置状态
+    if current >= total then
+        io.write("\n")  -- 使用 \n 而不是 print("")
+        io.flush()
+        current_progress_state.active = false
+        current_progress_state.last_line = ""
+        current_progress_state.last_percentage = -1
+    end
+end
+
+-- 显示传输统计信息
+function fixed_progress.show_transfer_stats(transferred, total, start_time, description)
+    local elapsed = os.time() - start_time
+    local speed = elapsed > 0 and (transferred / elapsed) or 0
+    local eta = speed > 0 and ((total - transferred) / speed) or 0
+    
+    local stats = string.format("| 速度: %.1f KB/s | 剩余: %ds", 
+                               speed / 1024, math.floor(eta))
+    
+    fixed_progress.show_progress(transferred, total, description or "📤 传输", stats)
+end
+
+-- 开始新的进度条会话
+function fixed_progress.start_session(description)
+    -- 如果有活动的进度条，先结束它
+    if current_progress_state.active then
+        fixed_progress.end_session()
+    end
+    
+    current_progress_state.start_time = os.time()
+    current_progress_state.description = description or "进度"
+    io.write(string.format("🚀 开始 %s\n", current_progress_state.description))
+    io.flush()
+end
+
+-- 结束进度条会话
+function fixed_progress.end_session(final_message)
+    if current_progress_state.active then
+        clear_current_line()
+        current_progress_state.active = false
+    end
+    
+    if final_message then
+        io.write(final_message .. "\n")
+        io.flush()
+    end
+    
+    -- 重置状态
+    current_progress_state.last_line = ""
+    current_progress_state.last_percentage = -1
+    current_progress_state.description = ""
+end
+
+-- 显示重传进度（特殊处理）
+function fixed_progress.show_retransmit_progress(current, total, block_id)
+    local extra_info = ""
+    if block_id then
+        extra_info = string.format("📤 重传数据块 %d", block_id)
+    end
+    
+    fixed_progress.show_progress(current, total, "🔄 重传进度", extra_info)
+end
+
+-- 重写 ulc_update_module 的进度显示函数
+local original_progress = ulc_update_module.progress
+if original_progress then
+    -- 备份原始函数
+    local original_show_progress = original_progress.show_progress
+    local original_show_transfer_stats = original_progress.show_transfer_stats
+    
+    -- 替换为固定进度条版本
+    original_progress.show_progress = function(current, total, description)
+        fixed_progress.show_progress(current, total, description)
+    end
+    
+    original_progress.show_transfer_stats = function(transferred, total, start_time, description)
+        fixed_progress.show_transfer_stats(transferred, total, start_time, description)
+    end
+end
+
 -- 获取测试固件目录路径
 local test_firmware_dir = this_dir .. "test_firmware/"
 
@@ -96,7 +248,8 @@ local function test_update_type(update_type)
         [2] = "扩展324"
     }
     
-    print("📋 更新类型: " .. (type_names[update_type] or "未知"))
+    local type_name = type_names[update_type] or "未知"
+    print("📋 更新类型: " .. type_name)
     
     -- 配置更新类型
     ulc_update_module.set_config("UPDATE_TYPE_FLAG", update_type)
@@ -123,11 +276,17 @@ local function test_update_type(update_type)
     print("📁 固件路径: " .. firmware_path)
     print("")
     
+    -- 开始固定进度条会话
+    fixed_progress.start_session(string.format("%s 固件更新", type_name))
+    
     -- 执行固件更新
     local success = ulc_update_module.update_firmware(firmware_path)
     
-    print("")
-    print("📊 测试结果: " .. (success and "✅ 成功" or "❌ 失败"))
+    -- 结束进度条会话
+    local result_message = string.format("📊 %s 更新结果: %s", 
+                                       type_name, 
+                                       success and "✅ 成功" or "❌ 失败")
+    fixed_progress.end_session(result_message)
     print("")
     
     return success
@@ -254,36 +413,48 @@ local function run_all_tests()
     
     local start_time = os.time()
     local test_results = {}
+    local test_list = {
+        {name = "配置功能", func = test_configuration},
+        {name = "工具函数", func = test_utility_functions},
+        {name = "Bitmap功能", func = test_bitmap_functions},
+        {name = "更新类型0", func = function() return test_update_type(0) end},
+        {name = "更新类型1", func = function() return test_update_type(1) end},
+        {name = "更新类型2", func = function() return test_update_type(2) end}
+    }
     
     -- 创建测试固件文件
     create_test_firmware()
     
-    -- 测试配置功能
-    local success = pcall(test_configuration)
-    test_results["配置功能"] = success
+    -- 开始整体测试进度
+    fixed_progress.start_session("全部测试")
     
-    -- 测试工具函数
-    success = pcall(test_utility_functions)
-    test_results["工具函数"] = success
-    
-    -- 测试bitmap功能
-    success = pcall(test_bitmap_functions)
-    test_results["Bitmap功能"] = success
-    
-    -- 测试各种更新类型
-    for update_type = 0, 2 do
-        local test_name = string.format("更新类型%d", update_type)
-        success = pcall(test_update_type, update_type)
-        test_results[test_name] = success
+    -- 执行所有测试
+    for i, test in ipairs(test_list) do
+        -- 显示整体进度
+        fixed_progress.show_progress(i - 1, #test_list, "🧪 测试进度", 
+                                   string.format("当前: %s", test.name))
+        
+        local success = pcall(test.func)
+        test_results[test.name] = success
+        
+        -- 短暂延迟，让用户看到进度
+        os.execute("timeout /t 1 >nul 2>&1")  -- Windows 延迟1秒
     end
+    
+    -- 完成所有测试
+    fixed_progress.show_progress(#test_list, #test_list, "🧪 测试进度", "所有测试完成")
     
     -- 显示测试结果汇总
     local end_time = os.time()
     local duration = end_time - start_time
     
-    print("=" .. string.rep("=", 50))
-    print("📊 测试结果汇总")
-    print("=" .. string.rep("=", 50))
+    fixed_progress.end_session()
+    io.write("\n")
+    io.flush()
+    io.write("=" .. string.rep("=", 50) .. "\n")
+    io.write("📊 测试结果汇总\n")
+    io.write("=" .. string.rep("=", 50) .. "\n")
+    io.flush()
     
     local passed = 0
     local total = 0
@@ -310,6 +481,83 @@ local function run_all_tests()
     end
 end
 
+-- 演示固定进度条功能
+local function demo_fixed_progress()
+    io.write("=== 🎬 固定进度条演示 ===\n")
+    io.write("这个演示将展示固定进度条的各种功能\n\n")
+    io.flush()
+    
+    -- 演示1: 基本进度条
+    io.write("📊 演示1: 基本进度条\n")
+    io.flush()
+    fixed_progress.start_session("基本进度演示")
+    
+    for i = 0, 20 do
+        fixed_progress.show_progress(i, 20, "📈 基本进度")
+        os.execute("timeout /t 1 >nul 2>&1")  -- 延迟1秒
+    end
+    
+    fixed_progress.end_session("✅ 基本进度演示完成")
+    io.write("\n")
+    io.flush()
+    
+    -- 演示2: 带额外信息的进度条
+    io.write("📊 演示2: 带额外信息的进度条\n")
+    io.flush()
+    fixed_progress.start_session("传输演示")
+    
+    local start_time = os.time()
+    for i = 0, 15 do
+        local extra_info = string.format("| 速度: %.1f KB/s | 数据块: %d", 
+                                        (i * 64.5), i)
+        fixed_progress.show_progress(i, 15, "📤 数据传输", extra_info)
+        os.execute("timeout /t 1 >nul 2>&1")  -- 延迟1秒
+    end
+    
+    fixed_progress.end_session("✅ 传输演示完成")
+    io.write("\n")
+    io.flush()
+    
+    -- 演示3: 重传进度演示
+    io.write("📊 演示3: 重传进度演示\n")
+    io.flush()
+    fixed_progress.start_session("重传演示")
+    
+    for i = 0, 10 do
+        fixed_progress.show_retransmit_progress(i, 10, 1000 + i)
+        os.execute("timeout /t 1 >nul 2>&1")  -- 延迟1秒
+    end
+    
+    fixed_progress.end_session("✅ 重传演示完成")
+    io.write("\n")
+    io.flush()
+    
+    -- 演示4: 多阶段进度
+    io.write("📊 演示4: 多阶段进度演示\n")
+    io.flush()
+    local stages = {
+        {name = "🔍 准备阶段", steps = 5},
+        {name = "📤 传输阶段", steps = 8},
+        {name = "🔄 验证阶段", steps = 3},
+        {name = "✅ 完成阶段", steps = 2}
+    }
+    
+    for stage_idx, stage in ipairs(stages) do
+        fixed_progress.start_session(stage.name)
+        
+        for step = 0, stage.steps do
+            local extra_info = string.format("阶段 %d/%d", stage_idx, #stages)
+            fixed_progress.show_progress(step, stage.steps, stage.name, extra_info)
+            os.execute("timeout /t 1 >nul 2>&1")  -- 延迟1秒
+        end
+        
+        fixed_progress.end_session(string.format("✅ %s 完成", stage.name))
+    end
+    
+    io.write("\n🎉 固定进度条演示全部完成！\n")
+    io.flush()
+end
+
 -- 交互式测试菜单
 local function interactive_menu()
     while true do
@@ -323,10 +571,11 @@ local function interactive_menu()
         print("7. 测试 Bitmap 功能")
         print("8. 显示当前配置")
         print("9. 创建测试固件")
+        print("10. 演示固定进度条")
         print("0. 退出")
         print("")
         
-        io.write("请选择操作 (0-9): ")
+        io.write("请选择操作 (0-10): ")
         local choice = io.read()
         
         if choice == "1" then
@@ -347,6 +596,8 @@ local function interactive_menu()
             ulc_update_module.show_config()
         elseif choice == "9" then
             create_test_firmware()
+        elseif choice == "10" then
+            demo_fixed_progress()
         elseif choice == "0" then
             print("👋 再见！")
             break
@@ -386,6 +637,9 @@ local function main(...)
     elseif args[1] == "create" then
         -- 创建测试固件
         create_test_firmware()
+    elseif args[1] == "demo" then
+        -- 演示固定进度条
+        demo_fixed_progress()
     else
         print("用法:")
         print("  lua test_ulc_update.lua              # 交互式菜单")
@@ -395,6 +649,7 @@ local function main(...)
         print("  lua test_ulc_update.lua utils        # 测试工具函数")
         print("  lua test_ulc_update.lua bitmap       # 测试bitmap功能")
         print("  lua test_ulc_update.lua create       # 创建测试固件")
+        print("  lua test_ulc_update.lua demo         # 演示固定进度条")
     end
 end
 

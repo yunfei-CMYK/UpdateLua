@@ -3,6 +3,8 @@
 #include <crc.js>
 #include "CommonFunc.txt"
 
+
+
 //支持bitmap方式，不支持取断点
 //var USE_BREAK_POINT = 0;		//1表示调用80C4取断点，0表示不取断点
 
