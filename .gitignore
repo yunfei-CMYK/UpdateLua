@@ -12,3 +12,14 @@ pydemo/build/firmware_server/localpycs/pyimod02_importers.pyc
 pydemo/build/firmware_server/localpycs/pyimod03_ctypes.pyc
 pydemo/build/firmware_server/localpycs/pyimod04_pywin32.pyc
 pydemo/build/firmware_server/localpycs/struct.pyc
+luademo/test_firmware_medium/firmware_group_001.bin
+luademo/test_firmware_medium/firmware_group_002.bin
+luademo/test_firmware_medium/firmware_group_003.bin
+luademo/test_firmware_medium/firmware_group_004.bin
+luademo/test_firmware_medium/firmware_group_005.bin
+luademo/test_firmware_medium/firmware_group_006.bin
+luademo/test_firmware_medium/firmware_group_007.bin
+luademo/test_firmware_medium/firmware_group_008.bin
+luademo/test_firmware_medium/firmware_groups_info.txt
+luademo/test_firmware_medium/firmware_mac.bin
+luademo/test_firmware_medium/test_firmware_medium.bin
