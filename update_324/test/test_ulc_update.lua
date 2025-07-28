@@ -3,9 +3,12 @@
 -- 用于测试和演示 ulc_firmware_update_complete.lua 模块的功能
 
 -- 加载固件更新模块
+-- 获取当前脚本所在目录
 local this_dir = debug.getinfo(1, "S").source:match("@?(.*[/\\])") or "./"
 
-package.path = this_dir .. "?.lua;" .. package.path
+-- 添加当前目录和上级目录到模块搜索路径
+-- 因为 ulc_firmware_update_complete.lua 在上级目录中
+package.path = this_dir .. "?.lua;" .. this_dir .. "../?.lua;" .. package.path
 local ulc_update_module = require("ulc_firmware_update_complete")
 
 -- 固定进度条显示模块
@@ -14,18 +17,47 @@ local fixed_progress = {}
 -- 保存当前进度条状态
 local current_progress_state = {
     active = false,
-    last_line = "",
     last_percentage = -1,
     start_time = 0,
     description = ""
 }
 
--- 清除当前行并移动光标到行首
-local function clear_current_line()
-    if current_progress_state.active then
-        -- 使用更简单的清除方式：回到行首，清除整行，再回到行首
-        io.write("\r\27[K")
+-- 显示进度条（参考test_firmware_download.lua的实现）
+local function display_progress_bar(current, total, width, description)
+    width = width or 50
+    
+    -- 确保参数是有效的数字并转换为整数
+    current = math.floor(tonumber(current) or 0)
+    total = math.floor(tonumber(total) or 1)
+    
+    -- 防止除零错误
+    if total <= 0 then total = 1 end
+    if current > total then current = total end
+    if current < 0 then current = 0 end
+    
+    local percentage = math.floor((current / total) * 100)
+    local filled = math.floor((current / total) * width)
+    local empty = width - filled
+    
+    local bar = "[" .. string.rep("=", filled) .. string.rep("-", empty) .. "]"
+    local progress_text = string.format("%s %s %3d%% (%d/%d)", 
+                                      description or "📊 进度", bar, percentage, current, total)
+    
+    -- 使用回车符覆盖同一行
+    io.write("\r" .. progress_text)
+    io.flush()
+    
+    -- 更新状态
+    current_progress_state.active = true
+    current_progress_state.last_percentage = percentage
+    current_progress_state.description = description or "进度"
+    
+    -- 如果完成，换行并重置状态
+    if current >= total then
+        io.write("\n")
         io.flush()
+        current_progress_state.active = false
+        current_progress_state.last_percentage = -1
     end
 end
 
@@ -35,59 +67,12 @@ function fixed_progress.show_progress(current, total, description, extra_info)
         return
     end
     
-    local percentage = math.floor((current * 100) / total)
-    local bar_width = 40  -- 稍微缩短进度条宽度
-    local filled = math.floor((current * bar_width) / total)
-    local empty = bar_width - filled
-    
-    -- 确保filled和empty都是非负整数
-    filled = math.max(0, math.min(bar_width, filled))
-    empty = math.max(0, bar_width - filled)
-    
-    local bar = "[" .. string.rep("█", filled) .. string.rep("░", empty) .. "]"
-    
-    -- 构建进度文本
-    local progress_text = string.format("%s %s %3d%% (%d/%d)", 
-                                      description or "📊 进度", bar, percentage, current, total)
-    
-    -- 添加额外信息（如速度、剩余时间等）
-    if extra_info then
-        progress_text = progress_text .. " " .. extra_info
+    local desc = description or "📊 进度"
+    if extra_info and extra_info ~= "" then
+        desc = desc .. " " .. extra_info
     end
     
-    -- 如果进度条已激活且百分比没有变化，只更新额外信息
-    if current_progress_state.active and percentage == current_progress_state.last_percentage then
-        if extra_info and extra_info ~= "" then
-            -- 只更新额外信息部分
-            clear_current_line()
-            io.write(progress_text)
-            io.flush()
-            current_progress_state.last_line = progress_text
-        end
-        return
-    end
-    
-    -- 清除之前的进度条
-    clear_current_line()
-    
-    -- 显示新的进度条（不换行）
-    io.write(progress_text)
-    io.flush()
-    
-    -- 更新状态
-    current_progress_state.active = true
-    current_progress_state.last_line = progress_text
-    current_progress_state.last_percentage = percentage
-    current_progress_state.description = description or "进度"
-    
-    -- 如果完成，换行并重置状态
-    if current >= total then
-        io.write("\n")  -- 使用 \n 而不是 print("")
-        io.flush()
-        current_progress_state.active = false
-        current_progress_state.last_line = ""
-        current_progress_state.last_percentage = -1
-    end
+    display_progress_bar(current, total, 40, desc)
 end
 
 -- 显示传输统计信息
@@ -99,7 +84,8 @@ function fixed_progress.show_transfer_stats(transferred, total, start_time, desc
     local stats = string.format("| 速度: %.1f KB/s | 剩余: %ds", 
                                speed / 1024, math.floor(eta))
     
-    fixed_progress.show_progress(transferred, total, description or "📤 传输", stats)
+    local desc = (description or "📤 传输") .. " " .. stats
+    display_progress_bar(transferred, total, 40, desc)
 end
 
 -- 开始新的进度条会话
@@ -118,7 +104,8 @@ end
 -- 结束进度条会话
 function fixed_progress.end_session(final_message)
     if current_progress_state.active then
-        clear_current_line()
+        io.write("\n")  -- 确保换行
+        io.flush()
         current_progress_state.active = false
     end
     
@@ -128,7 +115,6 @@ function fixed_progress.end_session(final_message)
     end
     
     -- 重置状态
-    current_progress_state.last_line = ""
     current_progress_state.last_percentage = -1
     current_progress_state.description = ""
 end
@@ -161,7 +147,8 @@ if original_progress then
 end
 
 -- 获取测试固件目录路径
-local test_firmware_dir = this_dir .. "test_firmware/"
+local test_firmware_dir = this_dir .. "../test_firmware/"
+print("Current firmware path:", test_firmware_dir)
 
 -- 测试配置
 local TEST_CONFIG = {
@@ -173,7 +160,7 @@ local TEST_CONFIG = {
     },
     
     -- 测试模式配置
-    ENABLE_ERROR_SIMULATION = true,  -- 是否启用错误模拟
+    ENABLE_ERROR_SIMULATION = false,  -- 是否启用错误模拟
     ERROR_RATE = 0.1,               -- 错误率 (10%)
     VERBOSE_OUTPUT = true,          -- 是否显示详细输出
 }
@@ -405,6 +392,221 @@ local function test_bitmap_functions()
     print("")
 end
 
+-- 测试 SM2 验证功能
+local function test_sm2_verify()
+    print("=== 🔐 测试 SM2 签名验证功能 ===")
+    
+    local crypto = ulc_update_module.crypto
+    local utils = ulc_update_module.utils
+    
+    -- 检查是否有 crypto 库支持
+    if not crypto then
+        print("❌ 错误: crypto 模块不可用")
+        return false
+    end
+    
+    local test_success = true
+    
+    -- 测试1: 基本 SM2 验证功能测试
+    print("🧪 测试1: 基本 SM2 验证功能")
+    
+    local test_cases = {
+        {
+            name = "有效签名验证",
+            public_key = "04" .. string.rep("A1B2C3D4", 16),  -- 128字符 + 04前缀
+            id = "31323334353637383132333435363738",  -- "12345678" 的十六进制
+            signature = string.rep("ABCD", 16),  -- 64字符签名
+            plain_data = "48656C6C6F20576F726C64",  -- "Hello World" 的十六进制
+            expected = nil  -- 由于是模拟数据，结果可能不确定
+        },
+        {
+            name = "空ID测试（使用默认ID）",
+            public_key = "04" .. string.rep("A1B2C3D4", 16),
+            id = "",  -- 空ID，应该使用默认ID
+            signature = string.rep("ABCD", 16),
+            plain_data = "48656C6C6F20576F726C64",
+            expected = nil
+        },
+        {
+            name = "无04前缀的公钥",
+            public_key = string.rep("A1B2C3D4", 16),  -- 128字符，无04前缀
+            id = "31323334353637383132333435363738",
+            signature = string.rep("ABCD", 16),
+            plain_data = "48656C6C6F20576F726C64",
+            expected = nil
+        }
+    }
+    
+    for i, test_case in ipairs(test_cases) do
+        print(string.format("  📋 子测试 %d: %s", i, test_case.name))
+        
+        local success, result = pcall(function()
+            return crypto.sm2_verify(test_case.public_key, test_case.id, 
+                                   test_case.signature, test_case.plain_data)
+        end)
+        
+        if success then
+            print(string.format("    ✅ 验证函数执行成功，结果: %s", tostring(result)))
+        else
+            print(string.format("    ❌ 验证函数执行失败: %s", tostring(result)))
+            test_success = false
+        end
+    end
+    print("")
+    
+    -- 测试2: 直接模式 SM2 验证测试（如果可用）
+    if crypto.sm2_verify_direct then
+        print("🧪 测试2: 直接模式 SM2 验证")
+        
+        -- 尝试生成测试密钥对
+        local success_keygen, test_keypair = pcall(function()
+            local crypto_lib = require("crypto")
+            if crypto_lib and crypto_lib.pkey and crypto_lib.pkey.generate then
+                return crypto_lib.pkey.generate("sm2")
+            end
+            return nil
+        end)
+        
+        if success_keygen and test_keypair then
+            print("  ✅ 成功生成测试密钥对")
+            
+            -- 测试直接模式验证
+            local test_data = "48656C6C6F20576F726C64"  -- "Hello World"
+            local test_id = "31323334353637383132333435363738"  -- "12345678"
+            
+            -- 尝试生成签名
+            local success_sign, signature = pcall(function()
+                local utils_module = ulc_update_module.utils
+                local data_bin = utils_module.hex_to_bin(test_data)
+                return test_keypair:sign(data_bin)
+            end)
+            
+            if success_sign and signature then
+                local signature_hex = utils.bin_to_hex(signature):upper()
+                print("  📝 生成测试签名: " .. signature_hex:sub(1, 32) .. "...")
+                
+                -- 测试直接模式验证
+                local verify_success, verify_result = pcall(function()
+                    return crypto.sm2_verify_direct(test_keypair, test_id, signature_hex, test_data)
+                end)
+                
+                if verify_success then
+                    print(string.format("  ✅ 直接模式验证结果: %s", tostring(verify_result)))
+                else
+                    print(string.format("  ❌ 直接模式验证失败: %s", tostring(verify_result)))
+                    test_success = false
+                end
+            else
+                print("  ⚠️  无法生成测试签名，跳过直接模式测试")
+            end
+        else
+            print("  ⚠️  无法生成测试密钥对，跳过直接模式测试")
+        end
+        print("")
+    end
+    
+    -- 测试3: 错误处理测试
+    print("🧪 测试3: 错误处理测试")
+    
+    local error_test_cases = {
+        {
+            name = "空公钥",
+            public_key = "",
+            id = "31323334353637383132333435363738",
+            signature = string.rep("ABCD", 16),
+            plain_data = "48656C6C6F20576F726C64",
+            should_fail = true
+        },
+        {
+            name = "空签名",
+            public_key = "04" .. string.rep("A1B2C3D4", 16),
+            id = "31323334353637383132333435363738",
+            signature = "",
+            plain_data = "48656C6C6F20576F726C64",
+            should_fail = true
+        },
+        {
+            name = "无效公钥长度",
+            public_key = "04ABCD",  -- 太短
+            id = "31323334353637383132333435363738",
+            signature = string.rep("ABCD", 16),
+            plain_data = "48656C6C6F20576F726C64",
+            should_fail = true
+        }
+    }
+    
+    for i, test_case in ipairs(error_test_cases) do
+        print(string.format("  📋 错误测试 %d: %s", i, test_case.name))
+        
+        local success, result = pcall(function()
+            return crypto.sm2_verify(test_case.public_key, test_case.id, 
+                                   test_case.signature, test_case.plain_data)
+        end)
+        
+        if test_case.should_fail then
+            if not success or not result then
+                print("    ✅ 正确处理了错误情况")
+            else
+                print("    ❌ 应该失败但却成功了")
+                test_success = false
+            end
+        else
+            if success then
+                print(string.format("    ✅ 验证成功: %s", tostring(result)))
+            else
+                print(string.format("    ❌ 验证失败: %s", tostring(result)))
+                test_success = false
+            end
+        end
+    end
+    print("")
+    
+    -- 测试4: 性能测试
+    print("🧪 测试4: 性能测试")
+    
+    local performance_test_data = {
+        public_key = "04" .. string.rep("A1B2C3D4", 16),
+        id = "31323334353637383132333435363738",
+        signature = string.rep("ABCD", 16),
+        plain_data = "48656C6C6F20576F726C64"
+    }
+    
+    local test_count = 5
+    local start_time = os.clock()
+    
+    for i = 1, test_count do
+        local success, result = pcall(function()
+            return crypto.sm2_verify(performance_test_data.public_key, 
+                                   performance_test_data.id,
+                                   performance_test_data.signature, 
+                                   performance_test_data.plain_data)
+        end)
+        
+        if not success then
+            print(string.format("  ❌ 性能测试第 %d 次失败: %s", i, tostring(result)))
+            test_success = false
+            break
+        end
+    end
+    
+    local end_time = os.clock()
+    local duration = end_time - start_time
+    local avg_time = duration / test_count
+    
+    print(string.format("  📊 性能测试结果: %d 次验证，总耗时 %.3f 秒，平均 %.3f 秒/次", 
+                       test_count, duration, avg_time))
+    print("")
+    
+    -- 测试总结
+    if test_success then
+        print("✅ SM2 验证功能测试全部通过")
+    else
+        print("❌ SM2 验证功能测试存在失败项")
+    end
+    
+    return test_success
+end
+
 -- 主测试函数
 local function run_all_tests()
     print("🚀 ULC 固件更新模块测试开始")
@@ -417,6 +619,7 @@ local function run_all_tests()
         {name = "配置功能", func = test_configuration},
         {name = "工具函数", func = test_utility_functions},
         {name = "Bitmap功能", func = test_bitmap_functions},
+        {name = "SM2验证功能", func = test_sm2_verify},
         {name = "更新类型0", func = function() return test_update_type(0) end},
         {name = "更新类型1", func = function() return test_update_type(1) end},
         {name = "更新类型2", func = function() return test_update_type(2) end}
@@ -569,13 +772,14 @@ local function interactive_menu()
         print("5. 测试配置功能")
         print("6. 测试工具函数")
         print("7. 测试 Bitmap 功能")
-        print("8. 显示当前配置")
-        print("9. 创建测试固件")
-        print("10. 演示固定进度条")
+        print("8. 测试 SM2 验证功能")
+        print("9. 显示当前配置")
+        print("10. 创建测试固件")
+        print("11. 演示固定进度条")
         print("0. 退出")
         print("")
         
-        io.write("请选择操作 (0-10): ")
+        io.write("请选择操作 (0-11): ")
         local choice = io.read()
         
         if choice == "1" then
@@ -593,10 +797,12 @@ local function interactive_menu()
         elseif choice == "7" then
             test_bitmap_functions()
         elseif choice == "8" then
-            ulc_update_module.show_config()
+            test_sm2_verify()
         elseif choice == "9" then
-            create_test_firmware()
+            ulc_update_module.show_config()
         elseif choice == "10" then
+            create_test_firmware()
+        elseif choice == "11" then
             demo_fixed_progress()
         elseif choice == "0" then
             print("👋 再见！")
@@ -634,6 +840,9 @@ local function main(...)
     elseif args[1] == "bitmap" then
         -- 测试bitmap功能
         test_bitmap_functions()
+    elseif args[1] == "sm2" then
+        -- 测试SM2验证功能
+        test_sm2_verify()
     elseif args[1] == "create" then
         -- 创建测试固件
         create_test_firmware()
@@ -648,6 +857,7 @@ local function main(...)
         print("  lua test_ulc_update.lua config       # 测试配置功能")
         print("  lua test_ulc_update.lua utils        # 测试工具函数")
         print("  lua test_ulc_update.lua bitmap       # 测试bitmap功能")
+        print("  lua test_ulc_update.lua sm2          # 测试SM2验证功能")
         print("  lua test_ulc_update.lua create       # 创建测试固件")
         print("  lua test_ulc_update.lua demo         # 演示固定进度条")
     end

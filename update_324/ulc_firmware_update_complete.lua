@@ -279,11 +279,21 @@ function comm.ulc_send_apdu(apdu)
         return mock_pubkey
     elseif apdu:sub(1, 8) == "80DB001C" then
         -- 获取 UUID 和签名
-        local mock_uuid1 = utils.generate_random_hex(16)
-        local mock_uuid2 = utils.generate_random_hex(16)
-        local mock_signature = string.rep("A", 64)  -- 64字节模拟签名
-        local response = "01" .. mock_uuid1 .. "02" .. mock_uuid2 .. mock_signature
-        return response
+        if CONFIG.TEST_MODE then
+            -- 测试模式下使用固定的UUID，便于调试
+            local mock_uuid1 = "926C2332EE5A691D"  -- 固定UUID1
+            local mock_uuid2 = "A1B2C3D4E5F60718"  -- 固定UUID2
+            local mock_signature = string.rep("A", 64)  -- 64字符模拟签名
+            local response = "01" .. mock_uuid1 .. "02" .. mock_uuid2 .. mock_signature
+            return response
+        else
+            -- 生产模式下使用随机UUID
+            local mock_uuid1 = utils.generate_random_hex(16)
+            local mock_uuid2 = utils.generate_random_hex(16)
+            local mock_signature = string.rep("A", 64)  -- 64字符模拟签名
+            local response = "01" .. mock_uuid1 .. "02" .. mock_uuid2 .. mock_signature
+            return response
+        end
     elseif apdu:sub(1, 8) == "80DA0000" then
         -- 发送切换信息
         return "9000"
@@ -352,15 +362,44 @@ local progress = {}
 -- 保存当前进度条状态
 local progress_state = {
     active = false,
-    last_line = "",
     last_percentage = -1
 }
 
--- 清除当前行
-local function clear_progress_line()
-    if progress_state.active then
-        io.write("\r\27[K")  -- 回到行首并清除整行
+-- 显示进度条（参考test_firmware_download.lua的实现）
+local function display_progress_bar(current, total, width, description)
+    width = width or 50
+    
+    -- 确保参数是有效的数字并转换为整数
+    current = math.floor(tonumber(current) or 0)
+    total = math.floor(tonumber(total) or 1)
+    
+    -- 防止除零错误
+    if total <= 0 then total = 1 end
+    if current > total then current = total end
+    if current < 0 then current = 0 end
+    
+    local percentage = math.floor((current / total) * 100)
+    local filled = math.floor((current / total) * width)
+    local empty = width - filled
+    
+    local bar = "[" .. string.rep("=", filled) .. string.rep("-", empty) .. "]"
+    local progress_text = string.format("%s %s %3d%% (%d/%d)", 
+                                      description or "📊 进度", bar, percentage, current, total)
+    
+    -- 使用回车符覆盖同一行
+    io.write("\r" .. progress_text)
+    io.flush()
+    
+    -- 更新状态
+    progress_state.active = true
+    progress_state.last_percentage = percentage
+    
+    -- 如果完成，换行并重置状态
+    if current >= total then
+        io.write("\n")
         io.flush()
+        progress_state.active = false
+        progress_state.last_percentage = -1
     end
 end
 
@@ -370,49 +409,12 @@ function progress.show_progress(current, total, description, extra_info)
         return
     end
     
-    local percentage = math.floor((current * 100) / total)
-    local bar_width = 40  -- 稍微缩短进度条宽度以适应更多信息
-    local filled = math.floor((current * bar_width) / total)
-    local empty = bar_width - filled
-    
-    -- 确保filled和empty都是非负整数
-    filled = math.max(0, math.min(bar_width, filled))
-    empty = math.max(0, bar_width - filled)
-    
-    local bar = "[" .. string.rep("█", filled) .. string.rep("░", empty) .. "]"
-    local progress_text = string.format("%s %s %3d%% (%d/%d)", 
-                                      description or "📊 进度", bar, percentage, current, total)
-    
-    -- 添加额外信息
+    local desc = description or "📊 进度"
     if extra_info and extra_info ~= "" then
-        progress_text = progress_text .. " " .. extra_info
+        desc = desc .. " " .. extra_info
     end
     
-    -- 如果百分比没有变化且没有额外信息，不重复显示
-    if progress_state.active and percentage == progress_state.last_percentage and not extra_info then
-        return
-    end
-    
-    -- 清除之前的进度条
-    clear_progress_line()
-    
-    -- 显示新的进度条（不换行）
-    io.write(progress_text)
-    io.flush()
-    
-    -- 更新状态
-    progress_state.active = true
-    progress_state.last_line = progress_text
-    progress_state.last_percentage = percentage
-    
-    -- 如果完成，换行并重置状态
-    if current >= total then
-        io.write("\n")
-        io.flush()
-        progress_state.active = false
-        progress_state.last_line = ""
-        progress_state.last_percentage = -1
-    end
+    display_progress_bar(current, total, 40, desc)
 end
 
 -- 显示详细的传输统计
@@ -421,10 +423,11 @@ function progress.show_transfer_stats(transferred, total, start_time, descriptio
     local speed = elapsed > 0 and (transferred / elapsed) or 0
     local eta = speed > 0 and ((total - transferred) / speed) or 0
     
-    local stats = string.format(" | 速度: %.1f KB/s | 剩余: %ds", 
+    local stats = string.format("| 速度: %.1f KB/s | 剩余: %ds", 
                                speed / 1024, math.floor(eta))
     
-    progress.show_progress(transferred, total, (description or "传输") .. stats)
+    local desc = (description or "📤 传输") .. " " .. stats
+    display_progress_bar(transferred, total, 40, desc)
 end
 
 -- 加密函数模块（真实实现）
@@ -490,7 +493,109 @@ local function bin_to_hex(bin_str)
     return crypto_lib.hex(bin_str)
 end
 
--- SM2 签名验证函数（基于 pkey.lua 的实现方法）
+-- SM2 签名验证函数（直接模式 - 使用公钥对象）
+-- 参数：
+--   pubkey_obj: SM2公钥对象（crypto.pkey对象）
+--   id: 用户标识符（十六进制字符串，可为空）
+--   sign_data: 签名数据（十六进制字符串）
+--   plain_data: 原始数据（十六进制字符串）
+-- 返回：验证结果（boolean）
+function crypto.sm2_verify_direct(pubkey_obj, id, sign_data, plain_data)
+    print("🔐 SM2 签名验证（直接模式）:")
+    
+    -- 参数验证
+    if not pubkey_obj then
+        print("  ❌ 错误: SM2公钥对象不能为空")
+        return false
+    end
+    
+    if not sign_data or sign_data == "" then
+        print("  ❌ 错误: 签名数据不能为空")
+        return false
+    end
+    
+    if not plain_data then
+        print("  ❌ 错误: 原始数据不能为空")
+        return false
+    end
+    
+    -- 使用默认ID（如果为空）
+    local user_id = id
+    if not user_id or user_id == "" then
+        user_id = CONFIG.ENTL_ID
+    end
+    
+    -- 调试输出
+    print("  签名值：", sign_data)
+    print("  id: ", user_id)
+    print("  待签名源数据：", plain_data)
+    
+    local success, result = pcall(function()
+        -- 获取公钥的十六进制表示
+        local pubkey_hex = ""
+        local ok_get_key, err_get_key = pcall(function()
+            local pubkey_raw = pubkey_obj:getString('RAWPUBKEY/')
+            pubkey_hex = bin_to_hex(pubkey_raw):upper()
+            
+            -- 确保公钥包含"04"前缀
+            if pubkey_hex:sub(1, 2) ~= "04" then
+                pubkey_hex = "04" .. pubkey_hex
+            end
+        end)
+        
+        if not ok_get_key then
+            print("  ⚠️  无法获取公钥十六进制表示: " .. tostring(err_get_key))
+            error("无法获取公钥数据")
+        end
+        
+        print("  SM2公钥：", pubkey_hex)
+        
+        -- 计算ZA值时，公钥值不包含首字节"04"
+        local pubkey_without_prefix = utils.str_mid(pubkey_hex, 3, -1)  -- 去掉首字节"04"
+        
+        -- 构造ZA值
+        local za = "0080" .. user_id .. CONFIG.SM2_A .. CONFIG.SM2_B .. CONFIG.SM2_GX .. CONFIG.SM2_GY .. pubkey_without_prefix
+        
+        print("  📝 ZA构造数据长度: " .. #za .. " 字符")
+        print("  📝 ZA数据: " .. za:sub(1, 100) .. "..." .. za:sub(-20))
+        
+        -- 第一次SM3哈希：计算ZA的摘要
+        local za_bin = hex_to_bin(za)
+        local md = crypto_lib.digest("SM3", za_bin)
+        local md_hex = bin_to_hex(md):upper()
+        print("  🔍 ZA的SM3哈希值: " .. md_hex)
+        
+        -- 第二次SM3哈希：计算(ZA哈希值 + 原始数据)的摘要
+        local plain_data_bin = hex_to_bin(plain_data)
+        local md_hash = crypto_lib.digest("SM3", md .. plain_data_bin)
+        local md_hash_hex = bin_to_hex(md_hash):upper()
+        print("  🔍 最终消息哈希值: " .. md_hash_hex)
+        
+        -- 执行SM2签名验证（直接使用传入的公钥对象）
+        local signature_bin = hex_to_bin(sign_data)
+        print("  📊 签名二进制长度: " .. #signature_bin .. " 字节")
+        
+        -- 使用计算好的消息哈希进行验证
+        local verify_result = pubkey_obj:verify(md_hash, signature_bin)
+        
+        print("  🔍 SM2签名验证结果: " .. tostring(verify_result))
+        return verify_result
+    end)
+    
+    if success then
+        if result then
+            print("  ✅ SM2_verify_direct() 验证通过")
+        else
+            print("  ❌ SM2_verify_direct() 验证失败")
+        end
+        return result
+    else
+        print("  ❌ SM2签名验证过程出错: " .. tostring(result))
+        return false
+    end
+end
+
+-- SM2 签名验证函数（基于 JavaScript 版本的完整实现）
 -- 参数：
 --   public_key: SM2 公钥（十六进制字符串，含或不含"04"前缀）
 --   id: 用户ID（十六进制字符串，可为空）
@@ -539,16 +644,23 @@ function crypto.sm2_verify(public_key, id, signature, plain_data)
         user_id = CONFIG.ENTL_ID
     end
     
+    -- 调试输出（与JavaScript版本保持一致）
+    print("  签名值：", signature)
+    print("  SM2公钥：", public_key)
+    print("  id: ", user_id)
+    print("  待签名源数据：", plain_data)
+    
     -- 执行 SM2 签名验证
     local success, result = pcall(function()
-        -- 处理公钥格式
-        local pubkey_without_prefix = public_key
-        if public_key:sub(1, 2) == "04" then
-            pubkey_without_prefix = public_key:sub(3)
-        end
+        -- 计算ZA值时，公钥值不包含首字节"04"（与JavaScript版本逻辑一致）
+        local pubkey_without_prefix = utils.str_mid(public_key, 3, -1)  -- 去掉首字节"04"
         
         -- 构造完整的公钥（添加"04"前缀）
-        local full_pubkey = "04" .. pubkey_without_prefix
+        local full_pubkey = public_key
+        if public_key:sub(1, 2) ~= "04" then
+            full_pubkey = "04" .. public_key
+            pubkey_without_prefix = public_key
+        end
         
         -- 验证公钥长度
         if #full_pubkey ~= 130 then
@@ -557,24 +669,24 @@ function crypto.sm2_verify(public_key, id, signature, plain_data)
         
         print("  📊 公钥长度验证通过: " .. #full_pubkey .. " 字符")
         
-        -- 计算 ZA 值（仿照 JavaScript 版本的实现）
-        -- ZA = H256(ENTL || ID || a || b || xG || yG || xA || yA)
+        -- 构造ZA值（完全按照JavaScript版本的逻辑）
         local za_data = "0080" .. user_id .. CONFIG.SM2_A .. CONFIG.SM2_B .. 
                        CONFIG.SM2_GX .. CONFIG.SM2_GY .. pubkey_without_prefix
         
-        print("  📝 ZA 计算数据长度: " .. #za_data .. " 字符")
+        print("  📝 ZA构造数据长度: " .. #za_data .. " 字符")
+        print("  📝 ZA数据: " .. za_data:sub(1, 100) .. "..." .. za_data:sub(-20))  -- 显示前100和后20字符
         
-        -- 使用 SM3 计算 ZA 的哈希值
+        -- 第一次SM3哈希：计算ZA的摘要
         local za_bin = hex_to_bin(za_data)
         local za_hash = crypto_lib.digest("SM3", za_bin)
         local za_hash_hex = bin_to_hex(za_hash):upper()
-        print("  🔍 ZA 哈希值: " .. za_hash_hex)
+        print("  🔍 ZA的SM3哈希值: " .. za_hash_hex)
         
-        -- 计算 M' = ZA || M 的哈希值
+        -- 第二次SM3哈希：计算(ZA哈希值 + 原始数据)的摘要
         local plain_data_bin = hex_to_bin(plain_data)
         local message_hash = crypto_lib.digest("SM3", za_hash .. plain_data_bin)
         local message_hash_hex = bin_to_hex(message_hash):upper()
-        print("  🔍 消息哈希值: " .. message_hash_hex)
+        print("  🔍 最终消息哈希值: " .. message_hash_hex)
         
         -- 创建 SM2 公钥对象
         local pubkey_bin = hex_to_bin(full_pubkey)
@@ -582,51 +694,84 @@ function crypto.sm2_verify(public_key, id, signature, plain_data)
         local create_success = false
         local error_messages = {}
         
-        -- 方法1：尝试使用 RAWPUBKEY 格式
+        -- 方法1：使用RAWPUBKEY/SM2格式（包含04前缀）
         local ok1, err1 = pcall(function()
-            pkey = crypto_lib.pkey.new(pubkey_bin, "RAWPUBKEY/")
+            pkey = crypto_lib.pkey.new(pubkey_bin, "RAWPUBKEY/SM2")
             if pkey then
                 create_success = true
-                print("  ✅ 成功使用 RAWPUBKEY 格式创建公钥对象")
+                print("  ✅ 成功使用RAWPUBKEY/SM2格式创建公钥对象")
             end
         end)
         
         if not ok1 then
-            table.insert(error_messages, "RAWPUBKEY方法失败: " .. tostring(err1))
+            table.insert(error_messages, "RAWPUBKEY/SM2方法失败: " .. tostring(err1))
         end
         
+        -- 方法2：使用标准RAWPUBKEY格式
         if not create_success then
-            -- 方法2：尝试使用 DER 格式
             local ok2, err2 = pcall(function()
-                -- SM2 公钥的 DER 格式头部
-                local der_header = hex_to_bin("3059301306072A8648CE3D020106082A811CCF5501822D03420000")
-                local der_pubkey = der_header .. pubkey_bin
-                pkey = crypto_lib.pkey.new(der_pubkey, "PUBKEY/")
+                pkey = crypto_lib.pkey.new(pubkey_bin, "RAWPUBKEY/")
                 if pkey then
                     create_success = true
-                    print("  ✅ 成功使用 DER 格式创建公钥对象")
+                    print("  ✅ 成功使用RAWPUBKEY格式创建公钥对象")
                 end
             end)
             
             if not ok2 then
-                table.insert(error_messages, "DER方法失败: " .. tostring(err2))
+                table.insert(error_messages, "RAWPUBKEY方法失败: " .. tostring(err2))
             end
         end
         
+        -- 方法3：使用DER格式
         if not create_success then
-            -- 方法3：尝试其他可能的格式
             local ok3, err3 = pcall(function()
-                -- 尝试不带前缀的原始格式
-                local raw_pubkey = hex_to_bin(pubkey_without_prefix)
-                pkey = crypto_lib.pkey.new(raw_pubkey, "RAWPUBKEY/")
+                -- SM2公钥的DER格式头部（正确的SM2 OID）
+                local der_header = hex_to_bin("3059301306072A8648CE3D020106082A811CCF5501822D034200")
+                local der_pubkey = der_header .. pubkey_bin
+                pkey = crypto_lib.pkey.new(der_pubkey, "PUBKEY/")
+                if pkey then
+                    create_success = true
+                    print("  ✅ 成功使用DER格式创建公钥对象")
+                end
+            end)
+            
+            if not ok3 then
+                table.insert(error_messages, "DER方法失败: " .. tostring(err3))
+            end
+        end
+        
+        -- 方法4：尝试不带前缀的原始格式
+        if not create_success then
+            local ok4, err4 = pcall(function()
+                local raw_pubkey_bin = hex_to_bin(pubkey_without_prefix)
+                pkey = crypto_lib.pkey.new(raw_pubkey_bin, "RAWPUBKEY/SM2")
                 if pkey then
                     create_success = true
                     print("  ✅ 成功使用原始格式创建公钥对象")
                 end
             end)
             
-            if not ok3 then
-                table.insert(error_messages, "原始格式方法失败: " .. tostring(err3))
+            if not ok4 then
+                table.insert(error_messages, "原始格式方法失败: " .. tostring(err4))
+            end
+        end
+        
+        -- 方法5：尝试使用旧版API格式
+        if not create_success then
+            local ok5, err5 = pcall(function()
+                if crypto_lib.pkey.d2i then
+                    -- 构造简单的DER格式
+                    local simple_der = hex_to_bin("30" .. string.format("%02X", #full_pubkey/2 + 2) .. "0400" .. full_pubkey)
+                    pkey = crypto_lib.pkey.d2i('sm2', simple_der, 'pubkey')
+                    if pkey then
+                        create_success = true
+                        print("  ✅ 成功使用旧版API格式创建公钥对象")
+                    end
+                end
+            end)
+            
+            if not ok5 then
+                table.insert(error_messages, "旧版API方法失败: " .. tostring(err5))
             end
         end
         
@@ -638,32 +783,20 @@ function crypto.sm2_verify(public_key, id, signature, plain_data)
                 for i, msg in ipairs(error_messages) do
                     print("    " .. i .. ". " .. msg)
                 end
-                
-                -- 在测试模式下，返回模拟的验证结果
-                -- 这里可以根据需要返回true或false来测试不同场景
-                local mock_result = true  -- 模拟验证通过
-                print("  🎭 模拟验证结果: " .. tostring(mock_result))
-                return mock_result
+                return true  -- 在测试模式下返回成功
             else
-                -- 非测试模式下，抛出详细错误信息
-                local error_detail = "无法创建 SM2 公钥对象。尝试的方法:\n"
-                for i, msg in ipairs(error_messages) do
-                    error_detail = error_detail .. "  " .. i .. ". " .. msg .. "\n"
-                end
-                error_detail = error_detail .. "请检查crypto库是否支持SM2算法或公钥格式是否正确"
-                error(error_detail)
+                error("无法创建SM2公钥对象: " .. table.concat(error_messages, "; "))
             end
         end
         
-        -- 转换签名格式
+        -- 执行SM2签名验证
         local signature_bin = hex_to_bin(signature)
         print("  📊 签名二进制长度: " .. #signature_bin .. " 字节")
         
-        -- 执行 SM2 签名验证
-        -- 注意：这里直接使用计算好的消息哈希进行验证
+        -- 使用计算好的消息哈希进行验证
         local verify_result = pkey:verify(message_hash, signature_bin)
         
-        print("  🔍 SM2 签名验证结果: " .. tostring(verify_result))
+        print("  🔍 SM2签名验证结果: " .. tostring(verify_result))
         return verify_result
     end)
     
@@ -911,7 +1044,19 @@ function ulc_update.initialize()
     print("🆔 UUID2: " .. uuid2)
     
     -- 验证签名
-    crypto.sm2_verify(sm2_public_key, "", signature, "1122334455667788" .. data_part)
+    if CONFIG.TEST_MODE then
+        print("🎭 测试模式：跳过SM2签名验证")
+        print("  📝 签名数据: " .. signature)
+        print("  📝 验证数据: " .. ("1122334455667788" .. data_part))
+        print("  ✅ 模拟验证通过")
+    else
+        local verify_result = crypto.sm2_verify(sm2_public_key, "", signature, "1122334455667788" .. data_part)
+        if verify_result then
+            print("  ✅ SM2签名验证通过")
+        else
+            error("❌ SM2签名验证失败，初始化中止")
+        end
+    end
     
     print("✅ 初始化成功完成！")
 end

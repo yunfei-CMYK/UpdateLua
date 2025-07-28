@@ -41,7 +41,7 @@ lua test.lua
   "status": "success",
   "firmware_url": "http://localhost:8000/firmware/test.bin",
   "version": "1.0.0",
-  "release_date": "2024-12-20",
+  "release_date": "2025",
   "description": "最新固件版本"
 }
 ```
@@ -128,7 +128,7 @@ description: 测试固件包
 
 ### Python服务器输出示例：
 ```
-📥 固件下载请求: test.bin - 2024-12-20 10:30:45
+📥 固件下载请求: test.bin - 2025 10:30:45
 ```
 
 ## 🔍 故障排除

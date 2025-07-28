@@ -308,7 +308,7 @@ ulc_update.set_config("VERBOSE_OUTPUT", false)
 
 ## 📝 更新日志
 
-### v1.0.0 (2024-12-19)
+### v1.0.0 (2025)
 - ✅ 完整实现JavaScript版本的所有功能
 - ✅ 新增Bitmap完整性验证机制
 - ✅ 新增配置管理系统
